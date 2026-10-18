@@ -1,0 +1,31 @@
+
+name: Auto Test Every 5 Minutes
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: auto-test-every-5-minutes
+  cancel-in-progress: false
+
+jobs:
+  test:
+    name: Test Workflow
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Run Test
+        run: |
+          echo "GitHub Actions test started"
+          echo "Current UTC time:"
+          date -u
+          echo "Test successful"
