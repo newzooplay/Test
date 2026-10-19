@@ -1,0 +1,32 @@
+#EXTM3U
+# ╔══════════════════════════════════════════════════════════════════╗
+# ║                                                                    ║
+# ║   ██╗   ██╗ ██████╗ ███████╗       ██╗  ██╗████████╗██████╗ ███╗   ║
+# ║   ██║   ██║██╔═████╗╚════██║       ╚██╗██╔╝╚══██╔══╝██╔══██╗████╗  ║
+# ║   ██║   ██║██║██╔██║    ██╔╝        ╚███╔╝    ██║   ██████╔╝██╔██╗ ║
+# ║   ╚██╗ ██╔╝████╔╝██║   ██╔╝         ██╔██╗    ██║   ██╔══██╗██║╚██╗║
+# ║    ╚████╔╝ ╚██████╔╝   ██║         ██╔╝ ██╗   ██║   ██║  ██║██║ ╚═║
+# ║     ╚═══╝   ╚═════╝    ╚═╝         ╚═╝  ╚═╝   ╚═╝   ╚═╝  ╚═╝╚═╝    ║
+# ║                                                                    ║
+# ║   TOOL NAME     : V07                                             ║
+# ║   DEVELOPER     : @Krishna_Subroto                                ║
+# ║   CODENAME      : XTREME KILLER                                   ║
+# ║   VERSION       : 7.0.0-FINAL                                     ║
+# ║   GENERATED ON  : 2026-10-04 16:22:37                             ║
+# ║   SOURCE        : LIVE TV Scan - http://slytv.uk                  ║
+# ║   TOTAL LINKS   : 5                                               ║
+# ║   STATUS        : 100% VERIFIED WORKING LINKS ONLY                ║
+# ║                                                                    ║
+# ║        >> DO NOT REMOVE THIS CREDIT — RESPECT THE DEVELOPER <<     ║
+# ╚══════════════════════════════════════════════════════════════════╝
+#
+#EXTINF:-1 tvg-logo="http://img-cdn.curl.pk:8880/channels_icon/96427592251.png" group-title="UK | Bein Sports FHD",AR: Bein Sports 1 Arabic FHD [1177ms]
+http://slytv.uk/live/s83cDCqC/meRsFNP/86297.ts
+#EXTINF:-1 tvg-logo="http://img-cdn.curl.pk:8880/channels_icon/79542237451.png" group-title="UK | Bein Sports FHD",AR: Bein Sports 1 Premium FHD [1040ms]
+http://slytv.uk/live/s83cDCqC/meRsFNP/86273.ts
+#EXTINF:-1 tvg-logo="http://img-cdn.curl.pk:8880/channels_icon/22192559271.png" group-title="UK | Bein Sports FHD",AR: Bein Sports 4 FHD [2512ms]
+http://slytv.uk/live/s83cDCqC/meRsFNP/86287.ts
+#EXTINF:-1 tvg-logo="http://img-cdn.curl.pk:8880/channels_icon/66022462131.png" group-title="UK | Bein Sports FHD",BEin Sports Xtra 1 FHD [2365ms]
+http://slytv.uk/live/s83cDCqC/meRsFNP/86271.ts
+#EXTINF:-1 tvg-logo="http://img-cdn.curl.pk:8880/channels_icon/92778324151.png" group-title="UK | Bein Sports FHD",EN: Bein Sports 1 FHD [1065ms]
+http://slytv.uk/live/s83cDCqC/meRsFNP/86298.ts
