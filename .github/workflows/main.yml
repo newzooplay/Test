@@ -7,7 +7,7 @@ on:
     - cron: "0 3 * * 1"
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: website-analyzer
@@ -15,13 +15,15 @@ concurrency:
 
 jobs:
   analyze:
-    name: Analyze Website
+    name: Analyze, Commit and Push Results
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
+        with:
+          persist-credentials: true
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -34,16 +36,59 @@ jobs:
           python -m pip install "playwright==1.55.0"
 
       - name: Install Chromium
-        run: python -m playwright install --with-deps chromium
+        run: |
+          python -m playwright install --with-deps chromium
 
       - name: Run Website Analyzer
+        id: analyze
+        continue-on-error: true
         run: python analyzer.py
 
-      - name: Upload Analysis Report
+      - name: Prepare Report
+        if: always() && steps.analyze.outcome != 'skipped'
+        run: |
+          mkdir -p reports
+
+          if [ -f report.json ]; then
+            cp report.json reports/report.json
+          else
+            python - <<'PY'
+          import json
+          from datetime import datetime, timezone
+
+          report = {
+              "status": "failed",
+              "message": "Analyzer did not produce report.json",
+              "timestamp": datetime.now(timezone.utc).isoformat()
+          }
+
+          with open("reports/report.json", "w", encoding="utf-8") as f:
+              json.dump(report, f, indent=2)
+          PY
+          fi
+
+      - name: Commit and Push Results
+        if: always() && steps.analyze.outcome != 'skipped'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add reports/report.json
+
+          if git diff --cached --quiet; then
+            echo "No report changes to commit."
+          else
+            git commit -m "Update website analysis report"
+            git push origin "HEAD:${GITHUB_REF_NAME}"
+          fi
+
+      - name: Upload Report Artifact
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: website-analysis-report
-          path: report.json
+          path: reports/report.json
           if-no-files-found: ignore
           retention-days: 7
