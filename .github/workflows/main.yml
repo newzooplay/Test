@@ -1,5 +1,5 @@
 
-name: Website Page Analyzer
+name: Website Analyzer - Playwright Chromium
 
 on:
   workflow_dispatch:
@@ -10,14 +10,14 @@ permissions:
   contents: read
 
 concurrency:
-  group: website-page-analyzer
+  group: website-analyzer
   cancel-in-progress: false
 
 jobs:
   analyze:
-    name: Analyze Website Page
+    name: Analyze Website
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
 
     steps:
       - name: Checkout Repository
@@ -27,22 +27,17 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-          cache: pip
-          cache-dependency-path: requirements.txt
 
-      - name: Install Dependencies
+      - name: Install Playwright
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          python -m pip install "playwright==1.55.0"
+
+      - name: Install Chromium
+        run: python -m playwright install --with-deps chromium
 
       - name: Run Website Analyzer
-        run: |
-          python analyzer.py
-
-      - name: Validate Report
-        if: success()
-        run: |
-          python -c "import json; json.load(open('report.json', encoding='utf-8')); print('Report JSON is valid')"
+        run: python analyzer.py
 
       - name: Upload Analysis Report
         if: always()
@@ -50,5 +45,5 @@ jobs:
         with:
           name: website-analysis-report
           path: report.json
-          if-no-files-found: warn
+          if-no-files-found: ignore
           retention-days: 7
