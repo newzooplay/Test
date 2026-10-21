@@ -1,6 +1,6 @@
 {
   "target_url": "https://v4jxp5.movielinkbd.at/movie/mKs_ojqfqk3njpyykzcnckj3ykxtli",
-  "checked_at": "2026-10-21T04:32:15.476598+00:00",
+  "checked_at": "2026-10-21T04:33:12.757288+00:00",
   "http": {
     "status_code": 200,
     "final_url": "https://v4jxp5.movielinkbd.at/movie/mKs_ojqfqk3njpyykzcnckj3ykxtli",
@@ -8,7 +8,7 @@
     "content_length": null,
     "server": "cloudflare",
     "headers": {
-      "Date": "Wed, 21 Oct 2026 04:32:16 GMT",
+      "Date": "Wed, 21 Oct 2026 04:33:13 GMT",
       "Content-Type": "text/html; charset=UTF-8",
       "Transfer-Encoding": "chunked",
       "Connection": "keep-alive",
@@ -16,15 +16,15 @@
       "Nel": "{\"report_to\":\"cf-nel\",\"success_fraction\":0.0,\"max_age\":604800}",
       "X-Robots-Tag": "noindex, nofollow, noarchive",
       "Developed-By": "MKS",
-      "X-MLBD-Details-Cache": "HIT",
+      "X-MLBD-Details-Cache": "BUILD",
       "Cache-Control": "private, no-store, no-cache, must-revalidate, max-age=0",
-      "Set-Cookie": "mlbd_v76_10_view_9f482bc662193b9b94846e168dd1df08=1; expires=Wed, 21 Oct 2026 05:32:15 GMT; Max-Age=3600; path=/; secure; HttpOnly, mlbd_v76_10_ntc=shown; expires=Wed, 21 Oct 2026 05:32:15 GMT; Max-Age=3600; path=/",
+      "Set-Cookie": "mlbd_v76_10_view_9f482bc662193b9b94846e168dd1df08=1; expires=Wed, 21 Oct 2026 05:33:13 GMT; Max-Age=3600; path=/; secure; HttpOnly, mlbd_v76_10_ntc=shown; expires=Wed, 21 Oct 2026 05:33:13 GMT; Max-Age=3600; path=/",
       "Vary": "X-Forwarded-Proto,Accept-Encoding",
       "cf-cache-status": "BYPASS",
-      "Report-To": "{\"group\":\"cf-nel\",\"max_age\":604800,\"endpoints\":[{\"url\":\"https://a.nel.cloudflare.com/report/v4?s=OsJbp%2FQngD2ajAcR3joLWpObnHjq0Q6HVfzGpzzlbTFhIc19jeTHqT9r4dOlwKmYe0y9eGvhOAMxQPLnPzdmu%2Bb8bbx%2FNY0JWBDZ2CsJ3%2FyWTdRGjFvFq5Dx3XQ7Hha2sWSttIUKRoA%3D\"}]}",
+      "Report-To": "{\"group\":\"cf-nel\",\"max_age\":604800,\"endpoints\":[{\"url\":\"https://a.nel.cloudflare.com/report/v4?s=vk4zkhy7S4eisMP%2FlWxxZ86Qu%2FN8i%2FCLoPtqAU5SPwp9wjtfEyTuAvXeE77yO6VeXYoLbXpu0LYayRHH0lr2hKIyJKeyZVzTKYjgrUnf4dzQMiMw71cBoCYzRRv1UIG7m%2FDTVYtrxS8%3D\"}]}",
       "X-Served-By": "v4jxp5.movielinkbd.at",
       "Content-Encoding": "gzip",
-      "CF-RAY": "a4dd89918ee4c57c-IAD",
+      "CF-RAY": "a4dd8af79be19b36-IAD",
       "alt-svc": "h3=\":443\"; ma=86400"
     },
     "redirect_count": 0
