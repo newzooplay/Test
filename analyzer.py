@@ -1,58 +1,93 @@
 
+import asyncio
 import json
 import re
 import sys
 from datetime import datetime, timezone
-from urllib.parse import urljoin, urlparse
-
-import requests
-from bs4 import BeautifulSoup
-
-
-# ==========================================
-# CONFIGURATION: HARDCODE YOUR TARGET URL
-# ==========================================
-
-TARGET_URL = "https://v4jxp5.movielinkbd.at/movie/mKs_ojqfqk3njpyykzcnckj3ykxtli"
-
-TIMEOUT = 20
-MAX_HTML_BYTES = 5_000_000
-USER_AGENT = "WebsitePageAnalyzer/1.0"
-
-# ==========================================
-# PATTERNS
-# ==========================================
-
-API_PATTERN = re.compile(
-    r"/(?:api|graphql|rest|v[0-9]+)(?:/|$)",
-    re.IGNORECASE,
+from urllib.parse import (
+    parse_qsl,
+    urlencode,
+    urlparse,
+    urlunparse,
 )
 
+from playwright.async_api import async_playwright
+
+
+# ==========================================
+# CONFIGURATION
+# ==========================================
+
+TARGET_URL = "https://example.com"
+
+NAVIGATION_TIMEOUT = 60_000
+WAIT_AFTER_LOAD_MS = 5_000
+MAX_NETWORK_RECORDS = 2000
+
+SENSITIVE_QUERY_KEYS = {
+    "token",
+    "access_token",
+    "refresh_token",
+    "api_key",
+    "apikey",
+    "key",
+    "signature",
+    "sig",
+    "auth",
+    "authorization",
+    "password",
+    "session",
+    "sessionid",
+    "jwt",
+}
+
 VIDEO_EXTENSIONS = (
-    ".mp4",
-    ".webm",
-    ".ogg",
     ".m3u8",
     ".mpd",
+    ".mp4",
+    ".webm",
     ".m4v",
     ".mov",
     ".m4s",
     ".ts",
+    ".ogg",
 )
 
-API_KEYWORDS = (
-    "api",
-    "graphql",
-    "endpoint",
-    "fetch(",
-    "axios",
-    "xmlhttprequest",
+API_PATH_PATTERN = re.compile(
+    r"/(?:api|graphql|rest|v[0-9]+)(?:/|$)",
+    re.IGNORECASE,
 )
 
 
 # ==========================================
-# URL VALIDATION
+# HELPERS
 # ==========================================
+
+def redact_url(url):
+    """Remove common sensitive query parameters from reports."""
+    try:
+        parsed = urlparse(url)
+
+        query = [
+            (key, "[REDACTED]" if key.lower() in
+             SENSITIVE_QUERY_KEYS else value)
+            for key, value in parse_qsl(
+                parsed.query,
+                keep_blank_values=True,
+            )
+        ]
+
+        return urlunparse((
+            parsed.scheme,
+            parsed.netloc,
+            parsed.path,
+            parsed.params,
+            urlencode(query),
+            "",  # Drop fragments
+        ))
+    except Exception:
+        return "[URL REDACTED]"
+
 
 def validate_url(url):
     parsed = urlparse(url)
@@ -69,570 +104,35 @@ def validate_url(url):
 
     host = parsed.hostname.lower()
 
-    blocked_hosts = (
-        "localhost",
-        "localhost.localdomain",
-        "metadata.google.internal",
-    )
-
     if (
-        host in blocked_hosts
+        host == "localhost"
         or host.endswith(".localhost")
         or host.endswith(".local")
         or host.endswith(".internal")
+        or host.endswith(".test")
+        or host.endswith(".invalid")
+        or host.endswith(".example")
     ):
         raise ValueError(
-            "Local or internal hosts are not allowed."
+            "Local or internal hostnames are not allowed."
         )
-
-    return parsed
-
-
-# ==========================================
-# HELPER FUNCTIONS
-# ==========================================
-
-def absolute_url(base_url, value):
-    if not value:
-        return None
-
-    value = value.strip()
-
-    if not value or value.startswith(
-        ("#", "javascript:", "data:", "blob:", "mailto:", "tel:")
-    ):
-        return None
-
-    result = urljoin(base_url, value)
-    parsed = urlparse(result)
-
-    if parsed.scheme not in ("http", "https"):
-        return None
-
-    return result
-
-
-def unique_sorted(values):
-    return sorted(set(v for v in values if v))
-
-
-def get_meta_content(soup, name=None, property_name=None):
-    attrs = {}
-
-    if name:
-        attrs["name"] = name
-
-    if property_name:
-        attrs["property"] = property_name
-
-    tag = soup.find("meta", attrs=attrs)
-
-    if tag:
-        return tag.get("content")
-
-    return None
 
 
 def is_video_url(url):
-    if not url:
-        return False
-
     path = urlparse(url).path.lower()
-
     return path.endswith(VIDEO_EXTENSIONS)
 
 
-def is_api_candidate(url):
+def is_api_url(url):
     parsed = urlparse(url)
 
-    if API_PATTERN.search(parsed.path):
-        return True
-
-    return any(
-        word in parsed.query.lower()
-        for word in ("graphql", "api=")
+    return bool(
+        API_PATH_PATTERN.search(parsed.path)
+        or "graphql" in parsed.path.lower()
     )
 
 
-# ==========================================
-# FETCH WEBSITE
-# ==========================================
-
-def fetch_page(url):
-    validate_url(url)
-
-    session = requests.Session()
-    session.headers.update({
-        "User-Agent": USER_AGENT,
-        "Accept": (
-            "text/html,application/xhtml+xml,"
-            "application/xml;q=0.9,*/*;q=0.8"
-        ),
-    })
-
-    response = None
-
-    try:
-        # Follow redirects, subject to the target's
-        # normal public website configuration.
-        response = session.get(
-            url,
-            timeout=TIMEOUT,
-            allow_redirects=True,
-            stream=True,
-        )
-
-        redirect_chain = []
-
-        for item in response.history:
-            redirect_chain.append({
-                "status_code": item.status_code,
-                "url": item.url,
-                "location": item.headers.get("Location"),
-            })
-
-        final_url = response.url
-        final_parsed = urlparse(final_url)
-
-        if (
-            final_parsed.scheme != "https"
-            or not final_parsed.hostname
-            or final_parsed.username
-            or final_parsed.password
-        ):
-            raise ValueError(
-                "Redirect ended at an invalid or non-HTTPS URL."
-            )
-
-        content_type = response.headers.get(
-            "Content-Type", ""
-        )
-
-        result = {
-            "requested_url": url,
-            "final_url": final_url,
-            "status_code": response.status_code,
-            "reason": response.reason,
-            "http_headers": dict(response.headers),
-            "redirect_chain": redirect_chain,
-            "content_type": content_type,
-            "analyzed_at": datetime.now(
-                timezone.utc
-            ).isoformat(),
-        }
-
-        if "html" not in content_type.lower():
-            result["note"] = (
-                "The response Content-Type does not indicate HTML."
-            )
-            return result
-
-        chunks = []
-        total_bytes = 0
-
-        for chunk in response.iter_content(
-            chunk_size=65536
-        ):
-            if not chunk:
-                continue
-
-            total_bytes += len(chunk)
-
-            if total_bytes > MAX_HTML_BYTES:
-                raise ValueError(
-                    "HTML response exceeds the 5 MB limit."
-                )
-
-            chunks.append(chunk)
-
-        raw_html = b"".join(chunks)
-
-        encoding = response.encoding or "utf-8"
-
-        html = raw_html.decode(
-            encoding,
-            errors="replace",
-        )
-
-        result["html_bytes_inspected"] = len(raw_html)
-
-        return result, html
-
-    finally:
-        if response is not None:
-            response.close()
-
-        session.close()
-
-
-# ==========================================
-# ANALYZE HTML
-# ==========================================
-
-def analyze_html(base_url, html):
-    soup = BeautifulSoup(html, "html.parser")
-
-    resources = set()
-    scripts = set()
-    stylesheets = set()
-    images = set()
-    iframe_urls = set()
-    api_urls = set()
-    video_urls = set()
-    stream_urls = set()
-
-    # --------------------------
-    # Scripts
-    # --------------------------
-
-    for tag in soup.find_all("script"):
-        src = absolute_url(
-            base_url,
-            tag.get("src"),
-        )
-
-        if src:
-            scripts.add(src)
-            resources.add(src)
-
-    # --------------------------
-    # Stylesheets and links
-    # --------------------------
-
-    for tag in soup.find_all("link"):
-        href = absolute_url(
-            base_url,
-            tag.get("href"),
-        )
-
-        if not href:
-            continue
-
-        resources.add(href)
-
-        rel = tag.get("rel", [])
-        if isinstance(rel, str):
-            rel = rel.split()
-
-        rel = [item.lower() for item in rel]
-
-        if "stylesheet" in rel:
-            stylesheets.add(href)
-
-    # --------------------------
-    # Images
-    # --------------------------
-
-    for tag in soup.find_all("img"):
-        for attr in ("src", "data-src", "data-original"):
-            image_url = absolute_url(
-                base_url,
-                tag.get(attr),
-            )
-
-            if image_url:
-                images.add(image_url)
-                resources.add(image_url)
-
-        srcset = tag.get("srcset")
-
-        if srcset:
-            for item in srcset.split(","):
-                candidate = item.strip().split()
-
-                if candidate:
-                    image_url = absolute_url(
-                        base_url,
-                        candidate[0],
-                    )
-
-                    if image_url:
-                        images.add(image_url)
-                        resources.add(image_url)
-
-    # --------------------------
-    # Iframes
-    # --------------------------
-
-    for tag in soup.find_all("iframe"):
-        iframe_url = absolute_url(
-            base_url,
-            tag.get("src"),
-        )
-
-        if iframe_url:
-            iframe_urls.add(iframe_url)
-            resources.add(iframe_url)
-
-    # --------------------------
-    # Video, audio and source tags
-    # --------------------------
-
-    for tag in soup.find_all(
-        ["video", "audio", "source", "track"]
-    ):
-        for attr in (
-            "src",
-            "data-src",
-            "data-video",
-            "data-hls",
-            "data-dash",
-        ):
-            media_url = absolute_url(
-                base_url,
-                tag.get(attr),
-            )
-
-            if not media_url:
-                continue
-
-            resources.add(media_url)
-
-            if is_video_url(media_url):
-                video_urls.add(media_url)
-
-                path = urlparse(
-                    media_url
-                ).path.lower()
-
-                if path.endswith((".m3u8", ".mpd", ".m4s", ".ts")):
-                    stream_urls.add(media_url)
-
-    # --------------------------
-    # Metadata: Open Graph video
-    # --------------------------
-
-    for property_name in (
-        "og:video",
-        "og:video:url",
-        "og:video:secure_url",
-    ):
-        value = get_meta_content(
-            soup,
-            property_name=property_name,
-        )
-
-        media_url = absolute_url(base_url, value)
-
-        if media_url:
-            resources.add(media_url)
-            video_urls.add(media_url)
-
-            if is_video_url(media_url):
-                stream_urls.add(media_url)
-
-    # --------------------------
-    # All href/src attributes
-    # --------------------------
-
-    for tag in soup.find_all(True):
-        for attr in (
-            "href",
-            "src",
-            "action",
-            "data-url",
-            "data-api",
-            "data-endpoint",
-            "data-stream",
-        ):
-            value = tag.get(attr)
-
-            candidate = absolute_url(
-                base_url,
-                value,
-            )
-
-            if not candidate:
-                continue
-
-            resources.add(candidate)
-
-            if is_api_candidate(candidate):
-                api_urls.add(candidate)
-
-            if is_video_url(candidate):
-                video_urls.add(candidate)
-
-                if urlparse(
-                    candidate
-                ).path.lower().endswith(
-                    (".m3u8", ".mpd", ".m4s", ".ts")
-                ):
-                    stream_urls.add(candidate)
-
-    # --------------------------
-    # Inline HTML URL candidates
-    # --------------------------
-
-    # This searches HTML text for URLs explicitly
-    # present in the document. It does not execute JS.
-
-    inline_url_pattern = re.compile(
-        r"""["']((?:https?:)?//[^"' \t\r\n<>]+|"""
-        r"""/(?:api|graphql|rest|streams?)/[^"' \t\r\n<>]+)"""
-        r"""["']""",
-        re.IGNORECASE,
-    )
-
-    for match in inline_url_pattern.findall(html):
-        candidate = absolute_url(base_url, match)
-
-        if not candidate:
-            continue
-
-        resources.add(candidate)
-
-        if is_api_candidate(candidate):
-            api_urls.add(candidate)
-
-        if is_video_url(candidate):
-            video_urls.add(candidate)
-
-            if urlparse(
-                candidate
-            ).path.lower().endswith(
-                (".m3u8", ".mpd", ".m4s", ".ts")
-            ):
-                stream_urls.add(candidate)
-
-    # --------------------------
-    # Page metadata
-    # --------------------------
-
-    title = (
-        soup.title.get_text(" ", strip=True)
-        if soup.title
-        else None
-    )
-
-    canonical_tag = soup.find(
-        "link",
-        rel=lambda value: value and (
-            "canonical" in (
-                value if isinstance(value, list)
-                else value.split()
-            )
-        ),
-    )
-
-    canonical_url = (
-        absolute_url(
-            base_url,
-            canonical_tag.get("href"),
-        )
-        if canonical_tag
-        else None
-    )
-
-    headings = {}
-
-    for level in range(1, 7):
-        headings[f"h{level}"] = [
-            tag.get_text(" ", strip=True)
-            for tag in soup.find_all(f"h{level}")
-        ]
-
-    meta = {
-        "description": get_meta_content(
-            soup,
-            name="description",
-        ),
-        "keywords": get_meta_content(
-            soup,
-            name="keywords",
-        ),
-        "robots": get_meta_content(
-            soup,
-            name="robots",
-        ),
-        "author": get_meta_content(
-            soup,
-            name="author",
-        ),
-        "og_title": get_meta_content(
-            soup,
-            property_name="og:title",
-        ),
-        "og_description": get_meta_content(
-            soup,
-            property_name="og:description",
-        ),
-        "og_image": get_meta_content(
-            soup,
-            property_name="og:image",
-        ),
-        "og_url": get_meta_content(
-            soup,
-            property_name="og:url",
-        ),
-    }
-
-    for key, value in meta.items():
-        if key in ("og_image", "og_url") and value:
-            meta[key] = absolute_url(base_url, value)
-
-    # --------------------------
-    # Final report
-    # --------------------------
-
-    return {
-        "page_title": title,
-        "canonical_url": canonical_url,
-        "meta_tags": meta,
-        "headings": headings,
-        "counts": {
-            "resources": len(resources),
-            "scripts": len(scripts),
-            "stylesheets": len(stylesheets),
-            "images": len(images),
-            "iframes": len(iframe_urls),
-            "api_candidates": len(api_urls),
-            "video_urls": len(video_urls),
-            "stream_candidates": len(stream_urls),
-        },
-        "resources": unique_sorted(resources),
-        "scripts": unique_sorted(scripts),
-        "stylesheets": unique_sorted(stylesheets),
-        "images": unique_sorted(images),
-        "iframes": unique_sorted(iframe_urls),
-        "api_url_candidates": unique_sorted(api_urls),
-        "video_urls": unique_sorted(video_urls),
-        "stream_url_candidates": unique_sorted(stream_urls),
-        "limitations": [
-            "Only resources declared in the returned HTML are inspected.",
-            "JavaScript is not executed and browser network requests are not captured.",
-            "API candidates are heuristic matches, not verified API endpoints.",
-            "Protected streams, DRM, and authenticated resources are not extracted.",
-        ],
-    }
-
-
-# ==========================================
-# MAIN
-# ==========================================
-
-def main():
-    print("=" * 60)
-    print("WEBSITE PAGE ANALYZER")
-    print("=" * 60)
-    print(f"Target: {TARGET_URL}")
-
-    validate_url(TARGET_URL)
-
-    fetched = fetch_page(TARGET_URL)
-
-    # A non-HTML response returns a single dictionary.
-    if isinstance(fetched, dict):
-        report = fetched
-    else:
-        response_info, html = fetched
-
-        report = response_info
-        report["analysis"] = analyze_html(
-            response_info["final_url"],
-            html,
-        )
-
+def save_report(report):
     with open(
         "report.json",
         "w",
@@ -645,34 +145,333 @@ def main():
             ensure_ascii=False,
         )
 
-    print("\nAnalysis complete.")
-    print("Report saved to report.json")
+
+# ==========================================
+# MAIN BROWSER AUDIT
+# ==========================================
+
+async def analyze():
+    validate_url(TARGET_URL)
+
+    requests_seen = []
+    responses_seen = []
+    failures_seen = []
+
+    async with async_playwright() as playwright:
+        browser = await playwright.chromium.launch(
+            headless=True,
+        )
+
+        context = await browser.new_context(
+            viewport={
+                "width": 1365,
+                "height": 900,
+            },
+            ignore_https_errors=False,
+        )
+
+        page = await context.new_page()
+
+        page.set_default_timeout(20_000)
+
+        # --------------------------------------
+        # Capture browser network requests
+        # --------------------------------------
+
+        def on_request(request):
+            if len(requests_seen) >= MAX_NETWORK_RECORDS:
+                return
+
+            requests_seen.append({
+                "url": redact_url(request.url),
+                "method": request.method,
+                "resource_type": request.resource_type,
+            })
+
+        def on_response(response):
+            if len(responses_seen) >= MAX_NETWORK_RECORDS:
+                return
+
+            try:
+                headers = response.headers
+
+                # Only record selected, useful response headers.
+                safe_headers = {}
+
+                for key in (
+                    "content-type",
+                    "content-length",
+                    "cache-control",
+                    "accept-ranges",
+                    "content-range",
+                    "access-control-allow-origin",
+                ):
+                    if key in headers:
+                        safe_headers[key] = headers[key]
+
+                responses_seen.append({
+                    "url": redact_url(response.url),
+                    "status": response.status,
+                    "status_text": response.status_text,
+                    "headers": safe_headers,
+                    "request_type": response.request.resource_type,
+                })
+
+            except Exception:
+                pass
+
+        def on_request_failed(request):
+            if len(failures_seen) >= 200:
+                return
+
+            failures_seen.append({
+                "url": redact_url(request.url),
+                "resource_type": request.resource_type,
+                "failure": request.failure,
+            })
+
+        page.on("request", on_request)
+        page.on("response", on_response)
+        page.on("requestfailed", on_request_failed)
+
+        report = {
+            "target_url": redact_url(TARGET_URL),
+            "started_at": datetime.now(
+                timezone.utc
+            ).isoformat(),
+            "browser": "Playwright Chromium",
+        }
+
+        try:
+            # ----------------------------------
+            # Navigate and execute JavaScript
+            # ----------------------------------
+
+            navigation_response = await page.goto(
+                TARGET_URL,
+                wait_until="domcontentloaded",
+                timeout=NAVIGATION_TIMEOUT,
+            )
+
+            # Allow some delayed JS/network activity.
+            await page.wait_for_timeout(
+                WAIT_AFTER_LOAD_MS
+            )
+
+            # ----------------------------------
+            # Extract rendered DOM information
+            # ----------------------------------
+
+            page_data = await page.evaluate("""
+                () => {
+                    const meta = {};
+                    for (const item of document.querySelectorAll('meta')) {
+                        const key =
+                            item.getAttribute('name') ||
+                            item.getAttribute('property');
+
+                        if (key) {
+                            meta[key] = item.content || '';
+                        }
+                    }
+
+                    const canonical =
+                        document.querySelector('link[rel="canonical"]');
+
+                    const headings = {};
+                    for (let i = 1; i <= 6; i++) {
+                        headings['h' + i] = [
+                            ...document.querySelectorAll('h' + i)
+                        ].map(el => el.innerText.trim());
+                    }
+
+                    const media = [
+                        ...document.querySelectorAll(
+                            'video, audio, source, track'
+                        )
+                    ].map(el => ({
+                        tag: el.tagName.toLowerCase(),
+                        src: el.currentSrc ||
+                             el.src ||
+                             el.getAttribute('src') ||
+                             el.getAttribute('data-src') ||
+                             null,
+                        type: el.getAttribute('type'),
+                    })).filter(el => el.src);
+
+                    const resources = performance
+                        .getEntriesByType('resource')
+                        .map(entry => ({
+                            name: entry.name,
+                            initiator_type: entry.initiatorType,
+                            duration_ms: Math.round(entry.duration),
+                            transfer_size: entry.transferSize || 0,
+                        }));
+
+                    const scripts = [
+                        ...document.querySelectorAll('script[src]')
+                    ].map(el => el.src);
+
+                    const stylesheets = [
+                        ...document.querySelectorAll('link[rel="stylesheet"]')
+                    ].map(el => el.href);
+
+                    const images = [
+                        ...document.querySelectorAll('img')
+                    ].map(el => el.currentSrc || el.src)
+                     .filter(Boolean);
+
+                    const iframes = [
+                        ...document.querySelectorAll('iframe')
+                    ].map(el => el.src).filter(Boolean);
+
+                    return {
+                        title: document.title,
+                        url: location.href,
+                        html_lang: document.documentElement.lang || null,
+                        meta,
+                        canonical_url: canonical
+                            ? canonical.href
+                            : null,
+                        headings,
+                        scripts,
+                        stylesheets,
+                        images,
+                        iframes,
+                        media,
+                        performance_resources: resources,
+                    };
+                }
+            """)
+
+            report["navigation"] = {
+                "final_url": redact_url(page.url),
+                "status": (
+                    navigation_response.status
+                    if navigation_response
+                    else None
+                ),
+            }
+
+            # Redact query parameters in extracted URLs too.
+            for key in (
+                "scripts",
+                "stylesheets",
+                "images",
+                "iframes",
+            ):
+                page_data[key] = [
+                    redact_url(url)
+                    for url in page_data[key]
+                ]
+
+            page_data["canonical_url"] = (
+                redact_url(page_data["canonical_url"])
+                if page_data["canonical_url"]
+                else None
+            )
+
+            for media in page_data["media"]:
+                media["src"] = redact_url(media["src"])
+
+            for resource in page_data["performance_resources"]:
+                resource["name"] = redact_url(
+                    resource["name"]
+                )
+
+            report["page"] = page_data
+
+        except Exception as error:
+            report["navigation_error"] = str(error)
+
+        finally:
+            report["network"] = {
+                "requests": requests_seen,
+                "responses": responses_seen,
+                "failed_requests": failures_seen,
+            }
+
+            # Classify URLs from actual browser activity.
+            all_urls = {
+                item["url"]
+                for item in requests_seen
+            }
+
+            video_urls = sorted(
+                url for url in all_urls
+                if is_video_url(url)
+            )
+
+            api_candidates = sorted(
+                item["url"]
+                for item in requests_seen
+                if (
+                    item["resource_type"] in ("xhr", "fetch")
+                    or is_api_url(item["url"])
+                )
+            )
+
+            report["discovery"] = {
+                "api_candidates": sorted(set(api_candidates)),
+                "video_url_candidates": video_urls,
+                "stream_manifest_candidates": sorted(
+                    url for url in video_urls
+                    if urlparse(url).path.lower().endswith(
+                        (".m3u8", ".mpd")
+                    )
+                ),
+                "network_request_count": len(requests_seen),
+                "network_response_count": len(responses_seen),
+                "failed_request_count": len(failures_seen),
+            }
+
+            report["limitations"] = [
+                "Captures only requests observed during this browser session.",
+                "Delayed requests may require longer waiting or page interaction.",
+                "API candidates are not proof that an endpoint is documented or public.",
+                "Media URLs are observed references, not downloaded or decrypted streams.",
+                "Sensitive query parameters are redacted in reported URLs.",
+                "Only selected response headers are recorded; cookies and authorization headers are excluded.",
+                "The target URL is hardcoded, but redirect and subresource destinations still need network-level SSRF protection in untrusted environments.",
+            ]
+
+            report["completed_at"] = datetime.now(
+                timezone.utc
+            ).isoformat()
+
+            await context.close()
+            await browser.close()
+
+    save_report(report)
+
+    print("Website audit completed.")
+    print("Report saved: report.json")
     print(json.dumps(
-        report,
+        report.get("discovery", {}),
         indent=2,
         ensure_ascii=False,
     ))
 
-    status = report.get("status_code", 0)
+    if report.get("navigation_error"):
+        sys.exit(1)
 
-    if status >= 400:
+    status = report.get("navigation", {}).get("status")
+
+    if status is not None and status >= 400:
         sys.exit(1)
 
 
 if __name__ == "__main__":
     try:
-        main()
+        asyncio.run(analyze())
 
     except KeyboardInterrupt:
-        print(
-            "\nAnalysis interrupted.",
-            file=sys.stderr,
-        )
+        print("Audit interrupted.", file=sys.stderr)
         sys.exit(130)
 
     except Exception as error:
         print(
-            f"\nAnalysis failed: {error}",
+            f"Audit failed: {error}",
             file=sys.stderr,
         )
         sys.exit(1)
