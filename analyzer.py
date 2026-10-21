@@ -18,7 +18,7 @@ from playwright.async_api import async_playwright
 # CONFIGURATION
 # ==========================================
 
-TARGET_URL = "https://example.com"
+TARGET_URL = "https://v4jxp5.movielinkbd.at/movie/mKs_ojqfqk3njpyykzcnckj3ykxtli"
 
 NAVIGATION_TIMEOUT = 60_000
 WAIT_AFTER_LOAD_MS = 5_000
