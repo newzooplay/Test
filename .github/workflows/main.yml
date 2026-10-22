@@ -1,86 +1,45 @@
 
-name: Check M3U Playlist
+name: Build Active M3U Playlist
 
 on:
   workflow_dispatch:
     inputs:
       playlist_url:
-        description: "Enter your authorized M3U playlist URL"
+        description: "Source M3U playlist URL"
         required: true
-        type: string
-      output_file:
-        description: "Output playlist filename"
-        required: true
-        default: "active_playlist.m3u"
         type: string
 
 permissions:
   contents: write
 
 jobs:
-  check-playlist:
+  build-playlist:
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Check playlist URL
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Check streams and build playlist
         env:
           PLAYLIST_URL: ${{ inputs.playlist_url }}
-          OUTPUT_FILE: ${{ inputs.output_file }}
-        run: |
-          python - <<'PY'
-          import os
-          import urllib.request
-          import urllib.error
-          from urllib.parse import urlparse
+        run: python check_playlist.py
 
-          url = os.environ["PLAYLIST_URL"].strip()
-          output = os.environ["OUTPUT_FILE"].strip()
-
-          if urlparse(url).scheme not in ("http", "https"):
-              raise SystemExit("Playlist URL must use HTTP or HTTPS.")
-
-          if not output.endswith(".m3u"):
-              raise SystemExit("Output filename must end in .m3u.")
-
-          if "/" in output or "\\" in output or output in (".m3u", ""):
-              raise SystemExit("Enter a filename, not a directory path.")
-
-          request = urllib.request.Request(
-              url,
-              headers={"User-Agent": "M3U-Playlist-Checker/1.0"},
-          )
-
-          try:
-              with urllib.request.urlopen(request, timeout=30) as response:
-                  content = response.read().decode("utf-8-sig")
-
-              if "#EXTM3U" not in content:
-                  raise SystemExit("The URL did not return a valid M3U playlist.")
-
-              with open(output, "w", encoding="utf-8") as f:
-                  f.write(content.rstrip() + "\n")
-
-              print(f"Playlist downloaded: {output}")
-
-          except Exception as exc:
-              raise SystemExit(f"Playlist download failed: {exc}")
-          PY
-
-      - name: Commit and push playlist
-        env:
-          OUTPUT_FILE: ${{ inputs.output_file }}
+      - name: Commit and push result
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          git add -- "$OUTPUT_FILE"
+          git add active_playlist.m3u
 
           if git diff --cached --quiet; then
-            echo "No playlist changes to commit."
+            echo "No changes to commit."
           else
-            git commit -m "Update M3U playlist"
+            git commit -m "Update active playlist"
             git push
           fi
