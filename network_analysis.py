@@ -3,9 +3,9 @@ import asyncio
 import json
 import os
 import re
+from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
-from datetime import datetime, timezone
 
 from playwright.async_api import async_playwright
 
@@ -18,42 +18,134 @@ OUT = Path("reports")
 OUT.mkdir(exist_ok=True)
 
 events = []
+pages_seen = set()
 errors = []
+MAX_EVENTS = 5000
 
 
 def safe_url(url):
-    """Remove query parameters and fragments from recorded URLs."""
+    """Remove query strings, fragments and user-info from report URLs."""
     try:
         p = urlsplit(url)
-        return urlunsplit((p.scheme, p.netloc, p.path, "", ""))
+
+        if p.scheme not in ("http", "https"):
+            return f"{p.scheme}:"
+
+        host = p.hostname or ""
+        if p.port:
+            host = f"{host}:{p.port}"
+
+        return urlunsplit((p.scheme, host, p.path, "", ""))
     except Exception:
         return "[invalid URL]"
 
 
+def add_event(event):
+    if len(events) < MAX_EVENTS:
+        event["time_utc"] = datetime.now(timezone.utc).isoformat()
+        events.append(event)
+
+
+def possible_manifest(url):
+    path = urlsplit(url).path.lower()
+    return path.endswith((".m3u8", ".mpd"))
+
+
+def classify_url(url):
+    host = (urlsplit(url).hostname or "").lower()
+
+    if "playerbee.top" in host:
+        return "target-domain"
+
+    if "cloudflare.com" in host or host.endswith(".challenges.cloudflare.com"):
+        return "security-challenge"
+
+    return "external-domain"
+
+
 def record_request(request):
     url = request.url
-    path = urlsplit(url).path.lower()
+    previous = request.redirected_from
 
-    events.append({
+    add_event({
         "event": "request",
         "method": request.method,
         "resource_type": request.resource_type,
         "url": safe_url(url),
-        "possible_manifest": path.endswith((".m3u8", ".mpd")),
+        "domain_class": classify_url(url),
+        "possible_manifest": possible_manifest(url),
+        "redirected_from": (
+            safe_url(previous.url) if previous else None
+        ),
     })
 
 
 def record_response(response):
+    request = response.request
     url = response.url
-    path = urlsplit(url).path.lower()
 
-    events.append({
+    add_event({
         "event": "response",
         "status": response.status,
-        "resource_type": response.request.resource_type,
+        "resource_type": request.resource_type,
         "url": safe_url(url),
-        "possible_manifest": path.endswith((".m3u8", ".mpd")),
+        "domain_class": classify_url(url),
+        "possible_manifest": possible_manifest(url),
         "content_type": response.headers.get("content-type", ""),
+        "redirect_location": safe_url(
+            response.headers.get("location", "")
+        ) if response.headers.get("location") else None,
+    })
+
+
+def record_failed_request(request):
+    add_event({
+        "event": "request_failed",
+        "method": request.method,
+        "resource_type": request.resource_type,
+        "url": safe_url(request.url),
+        "domain_class": classify_url(request.url),
+        "failure": (request.failure or "unknown")[:200],
+    })
+
+
+def record_navigation(frame):
+    if frame == frame.page.main_frame:
+        kind = "main_navigation"
+    else:
+        kind = "iframe_navigation"
+
+    url = frame.url
+
+    add_event({
+        "event": kind,
+        "url": safe_url(url),
+        "domain_class": classify_url(url),
+    })
+
+
+async def inspect_page(page, kind):
+    page_id = id(page)
+
+    if page_id in pages_seen:
+        return
+
+    pages_seen.add(page_id)
+
+    page.on("request", record_request)
+    page.on("response", record_response)
+    page.on("requestfailed", record_failed_request)
+    page.on("framenavigated", record_navigation)
+
+    page.on(
+        "pageerror",
+        lambda exc: errors.append(str(exc)[:200]),
+    )
+
+    add_event({
+        "event": kind,
+        "url": safe_url(page.url),
+        "domain_class": classify_url(page.url),
     })
 
 
@@ -66,23 +158,26 @@ async def main():
         "main_status": None,
         "iframes": [],
         "media_elements": [],
-        "browser_errors": [],
         "notes": [],
     }
 
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
+
         context = await browser.new_context(
             ignore_https_errors=False,
         )
-        page = await context.new_page()
 
-        page.on("request", record_request)
-        page.on("response", record_response)
-        page.on(
-            "pageerror",
-            lambda exc: errors.append(str(exc)[:300]),
+        # Detect new tabs and popup windows.
+        context.on(
+            "page",
+            lambda page: asyncio.create_task(
+                inspect_page(page, "new_tab_or_popup")
+            ),
         )
+
+        page = await context.new_page()
+        await inspect_page(page, "main_page")
 
         try:
             response = await page.goto(
@@ -94,13 +189,15 @@ async def main():
             if response:
                 summary["main_status"] = response.status
 
-            # Allow normal page scripts to run briefly.
+            # Give ordinary page scripts time to run.
             await page.wait_for_timeout(5000)
 
             summary["title"] = await page.title()
             summary["final_url"] = safe_url(page.url)
 
-            summary["iframes"] = await page.locator("iframe").evaluate_all(
+            summary["iframes"] = await page.locator(
+                "iframe"
+            ).evaluate_all(
                 """els => els.map(el => ({
                     src: el.getAttribute('src') || '',
                     title: el.getAttribute('title') || '',
@@ -108,6 +205,10 @@ async def main():
                     height: el.getAttribute('height') || ''
                 }))"""
             )
+
+            # Sanitize iframe URLs before saving.
+            for iframe in summary["iframes"]:
+                iframe["src"] = safe_url(iframe["src"])
 
             summary["media_elements"] = await page.locator(
                 "video, audio, source"
@@ -119,16 +220,24 @@ async def main():
                 }))"""
             )
 
+            for media in summary["media_elements"]:
+                media["src"] = safe_url(media["src"])
+
             if summary["main_status"] == 403:
                 summary["notes"].append(
-                    "Access denied or challenge response; "
-                    "the original player page may not have loaded."
+                    "HTTP 403: the page may be blocked or showing "
+                    "a security challenge."
+                )
+
+            if summary["main_status"] == 307:
+                summary["notes"].append(
+                    "HTTP 307 was observed. Check navigation events "
+                    "for subsequent redirects."
                 )
 
         except Exception as exc:
             summary["notes"].append(
-                f"Navigation/inspection error: {type(exc).__name__}: "
-                f"{str(exc)[:250]}"
+                f"{type(exc).__name__}: {str(exc)[:250]}"
             )
 
         finally:
@@ -137,8 +246,7 @@ async def main():
                 datetime.now(timezone.utc).isoformat()
             )
 
-            # Do not record request bodies, cookies, authorization headers,
-            # or query parameters that may contain tokens or keys.
+            # Save structured reports.
             (OUT / "summary.json").write_text(
                 json.dumps(summary, indent=2),
                 encoding="utf-8",
@@ -149,14 +257,15 @@ async def main():
                 encoding="utf-8",
             )
 
+            # Generate a readable report.
             report = [
                 "# Chromium Network Analysis",
                 "",
                 f"- Target: {summary['target']}",
                 f"- HTTP status: {summary['main_status']}",
-                f"- Page title: {summary['title']}",
+                f"- Title: {summary['title']}",
                 f"- Final URL: {summary['final_url']}",
-                f"- Requests/responses recorded: {len(events)}",
+                f"- Recorded events: {len(events)}",
                 f"- Iframes: {len(summary['iframes'])}",
                 f"- Media elements: {len(summary['media_elements'])}",
                 "",
@@ -166,36 +275,58 @@ async def main():
             report.extend(
                 f"- {note}" for note in summary["notes"]
             )
+
             report.extend([
                 "",
-                "## Iframes",
-                "```json",
-                json.dumps(summary["iframes"], indent=2),
-                "```",
+                "## Navigation and redirects",
                 "",
-                "## Media elements",
-                "```json",
-                json.dumps(summary["media_elements"], indent=2),
-                "```",
+            ])
+
+            for event in events:
+                if event["event"] in (
+                    "main_navigation",
+                    "iframe_navigation",
+                    "new_tab_or_popup",
+                ):
+                    report.append(
+                        f"- {event['event']}: {event['url']}"
+                    )
+
+            report.extend([
+                "",
+                "## External requests",
+                "",
+            ])
+
+            for event in events:
+                if (
+                    event.get("event") == "request"
+                    and event.get("domain_class") == "external-domain"
+                ):
+                    report.append(
+                        f"- {event['resource_type']}: {event['url']}"
+                    )
+
+            report.extend([
                 "",
                 "## Manifest request indicators",
+                "",
             ])
 
             manifests = [
-                e for e in events
-                if e.get("possible_manifest")
+                event for event in events
+                if event.get("possible_manifest")
             ]
 
             if manifests:
-                for item in manifests:
+                for event in manifests:
                     report.append(
-                        f"- {item['event']}: "
-                        f"{item['url']} "
-                        f"(status={item.get('status', 'pending')})"
+                        f"- {event['event']}: {event['url']} "
+                        f"(status={event.get('status', 'unknown')})"
                     )
             else:
                 report.append(
-                    "- No .m3u8/.mpd request detected in recorded events."
+                    "- No .m3u8 or .mpd request detected."
                 )
 
             (OUT / "network-analysis.md").write_text(
