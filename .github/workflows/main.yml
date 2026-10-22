@@ -1,4 +1,21 @@
 
+name: Sportlink Network Analysis
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
       - name: Inspect public channel metadata
         shell: bash
         run: |
@@ -25,10 +42,13 @@
               print("\nSOURCE:", url)
               try:
                   req = urllib.request.Request(
-                      url, headers={"User-Agent": "Network-Analysis/1.0"}
+                      url,
+                      headers={"User-Agent": "Network-Analysis/1.0"}
                   )
-                  with urllib.request.urlopen(req, timeout=15) as response:
-                      raw = json.loads(response.read().decode("utf-8"))
+                  with urllib.request.urlopen(req, timeout=15) as res:
+                      raw = json.loads(
+                          res.read().decode("utf-8")
+                      )
 
                   entries = normalise(raw)
                   print("Entries:", len(entries))
@@ -36,15 +56,22 @@
                   for item in entries:
                       if not isinstance(item, dict):
                           continue
+
                       if str(item.get("id")) == "tntsports1":
-                          # Avoid printing tracking tokens or query parameters.
-                          print("Matching channel:")
-                          print("  id:", item.get("id"))
-                          print("  name:", item.get("name"))
-                          print("  category:", item.get("category"))
-                          print("  has iframeSrc:", bool(item.get("iframeSrc")))
-                          print("  has hit:", bool(item.get("hit")))
+                          print("Matching channel found")
+                          print("ID:", item.get("id"))
+                          print("Name:", item.get("name"))
+                          print("Category:", item.get("category"))
+                          print(
+                              "Has iframeSrc:",
+                              bool(item.get("iframeSrc"))
+                          )
+                          print("Has hit:", bool(item.get("hit")))
 
               except Exception as exc:
-                  print("Analysis failed:", type(exc).__name__, str(exc))
+                  print(
+                      "Request failed:",
+                      type(exc).__name__,
+                      str(exc)
+                  )
           PY
