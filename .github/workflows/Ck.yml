@@ -13,33 +13,38 @@ permissions:
   contents: write
 
 jobs:
-  build-playlist:
+  build:
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Install FFmpeg
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
-      - name: Check streams and build playlist
+      - name: Check streams
         env:
           PLAYLIST_URL: ${{ inputs.playlist_url }}
         run: python check_playlist.py
 
-      - name: Commit and push result
+      - name: Commit and push
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
           git add active_playlist.m3u
 
-          if git diff --cached --quiet; then
-            echo "No changes to commit."
-          else
+          if ! git diff --cached --quiet; then
             git commit -m "Update active playlist"
             git push
+          else
+            echo "No playlist changes."
           fi
