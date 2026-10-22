@@ -1,121 +1,43 @@
 
-name: Player Page Network Report
+name: Chromium Network Analysis
 
 on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   analyze:
     runs-on: ubuntu-latest
-    timeout-minutes: 3
+    timeout-minutes: 5
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
         with:
-          ref: ${{ github.ref_name }}
+          python-version: "3.12"
 
-      - name: Inspect public page
-        shell: bash
+      - name: Install Playwright and Chromium
         run: |
-          set -eu
+          python -m pip install playwright
+          python -m playwright install --with-deps chromium
 
-          mkdir -p reports
-          BODY="$(mktemp)"
-          HEADERS="$(mktemp)"
-          trap 'rm -f "$BODY" "$HEADERS"' EXIT
-
-          TARGET='https://playerbee.top/charlie/pga-lpga-golf/3028'
-
-          STATUS=$(curl -sS -L \
-            --max-redirs 5 \
-            --max-time 25 \
-            -D "$HEADERS" \
-            -o "$BODY" \
-            -w '%{http_code}' \
-            "$TARGET" || true)
-
-          {
-            echo "# Player Page Network Report"
-            echo
-            echo "- Target: $TARGET"
-            echo "- HTTP status: $STATUS"
-            echo "- Date (UTC): $(date -u +%FT%TZ)"
-            echo
-            echo "## Response headers"
-            echo '```text'
-            cat "$HEADERS"
-            echo '```'
-            echo
-            echo "## HTML structure"
-          } > reports/network-analysis.md
-
-          python3 - "$BODY" >> reports/network-analysis.md <<'PY'
-          import sys
-          from html.parser import HTMLParser
-
-          class Inspector(HTMLParser):
-              def __init__(self):
-                  super().__init__()
-                  self.title = False
-                  self.title_text = []
-                  self.scripts = 0
-                  self.iframes = 0
-                  self.sources = 0
-
-              def handle_starttag(self, tag, attrs):
-                  attrs = dict(attrs)
-                  if tag == "title":
-                      self.title = True
-                  elif tag == "script":
-                      self.scripts += 1
-                  elif tag == "iframe":
-                      self.iframes += 1
-                  elif tag in ("video", "source"):
-                      self.sources += 1
-
-              def handle_endtag(self, tag):
-                  if tag == "title":
-                      self.title = False
-
-              def handle_data(self, data):
-                  if self.title:
-                      self.title_text.append(data.strip())
-
-          parser = Inspector()
-          try:
-              with open(sys.argv[1], encoding="utf-8",
-                        errors="replace") as f:
-                  parser.feed(f.read())
-
-              print("- Page title:", " ".join(parser.title_text) or "(not found)")
-              print("- Script elements:", parser.scripts)
-              print("- Iframe elements:", parser.iframes)
-              print("- Video/source elements:", parser.sources)
-          except Exception as exc:
-              print("- HTML inspection failed:", type(exc).__name__)
-          PY
-
-      - name: Commit report to repository
-        shell: bash
+      - name: Run network analysis
         env:
-          GH_TOKEN: ${{ github.token }}
+          TARGET_URL: https://playerbee.top/charlie/pga-lpga-golf/3028
         run: |
-          set -eu
+          python network_analysis.py
 
-          git config user.name "github-actions[bot]"
-          git config user.email \
-            "41898282+github-actions[bot]@users.noreply.github.com"
-
-          git add reports/network-analysis.md
-
-          if git diff --cached --quiet; then
-            echo "No report changes to commit."
-            exit 0
-          fi
-
-          git commit -m "Update player network analysis report"
-          git push origin "HEAD:${GITHUB_REF_NAME}"
+      - name: Upload network report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: chromium-network-report
+          path: reports/
+          if-no-files-found: warn
+          retention-days: 3
+          
