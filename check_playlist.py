@@ -1,75 +1,113 @@
 
 import os
+import sys
 import subprocess
 import urllib.request
 from urllib.parse import urlparse
 
-SOURCE_URL = os.environ.get("PLAYLIST_URL", "").strip()
-OUTPUT_FILE = "active_playlist.m3u"
-TIMEOUT = 12
+MAX_PLAYLIST_SIZE = 20 * 1024 * 1024
+FFMPEG_TIMEOUT = 15
 
 
 def download_playlist(url):
+    """Download and validate an M3U playlist."""
     parsed = urlparse(url)
 
-    if parsed.scheme not in ("http", "https"):
-        raise ValueError("Playlist URL must use HTTP or HTTPS")
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        raise ValueError("Playlist URL must be a valid HTTP/HTTPS URL.")
 
     request = urllib.request.Request(
         url,
-        headers={"User-Agent": "Mozilla/5.0"},
+        headers={"User-Agent": "Mozilla/5.0"}
     )
 
+    print("Downloading source playlist...")
+
     with urllib.request.urlopen(request, timeout=30) as response:
-        content = response.read(20 * 1024 * 1024 + 1)
+        print("HTTP status:", response.status)
+        print("Content-Type:", response.headers.get("Content-Type", "unknown"))
+        raw = response.read(MAX_PLAYLIST_SIZE + 1)
 
-    if len(content) > 20 * 1024 * 1024:
-        raise ValueError("Playlist exceeds 20 MB limit")
+    if len(raw) > MAX_PLAYLIST_SIZE:
+        raise ValueError("Playlist exceeds the 20 MB limit.")
 
-    text = content.decode("utf-8-sig", errors="replace")
+    text = raw.decode("utf-8-sig", errors="replace").strip()
 
-    if not text.lstrip().startswith("#EXTM3U"):
-        raise ValueError("Invalid M3U playlist")
+    # Ignore leading blank lines or whitespace.
+    text = text.lstrip()
 
+    if not text.startswith("#EXTM3U"):
+        preview = "\n".join(text.splitlines()[:5])
+        print("Downloaded content preview:")
+        print(preview[:1000] or "(empty response)")
+        raise ValueError(
+            "Invalid M3U playlist: the response does not start with #EXTM3U. "
+            "Check whether the URL points directly to the raw playlist."
+        )
+
+    print("Playlist downloaded successfully.")
     return text
 
 
 def parse_playlist(text):
+    """Split the playlist into its header and individual entries."""
     lines = text.splitlines()
-    header = lines[0].strip()
+    header = []
     entries = []
-    pending = []
+    current_entry = None
+    found_entry = False
 
-    for line in lines[1:]:
+    for line in lines:
         line = line.strip()
 
         if not line:
+            if current_entry is not None:
+                current_entry.append(line)
+            elif not found_entry:
+                header.append(line)
             continue
 
         if line.startswith("#EXTINF"):
-            pending = [line]
-        elif pending:
-            pending.append(line)
+            found_entry = True
+            current_entry = [line]
+            continue
 
-            if not line.startswith("#"):
-                entries.append((pending[:], line))
-                pending = []
+        if current_entry is None:
+            if not found_entry:
+                header.append(line)
+            continue
+
+        if line.startswith("#"):
+            current_entry.append(line)
+            continue
+
+        # A non-comment line is treated as the stream URL.
+        if line.startswith(("http://", "https://")):
+            current_entry.append(line)
+            entries.append(current_entry)
+            current_entry = None
+        else:
+            print("Skipping unsupported stream URL:", line[:150])
+            current_entry = None
+
+    if not entries:
+        raise ValueError(
+            "No valid HTTP/HTTPS stream entries found in the playlist."
+        )
 
     return header, entries
 
 
 def check_stream(url):
-    if urlparse(url).scheme not in ("http", "https"):
-        return False
-
+    """Use FFmpeg to test whether a stream can be read."""
     command = [
         "ffmpeg",
         "-nostdin",
         "-hide_banner",
         "-loglevel", "error",
-        "-xerror",
+        "-rw_timeout", "8000000",
         "-i", url,
-        "-t", "3",
+        "-t", "2",
         "-f", "null",
         "-"
     ]
@@ -79,55 +117,98 @@ def check_stream(url):
             command,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.PIPE,
-            timeout=TIMEOUT,
-            check=False,
+            text=True,
+            timeout=FFMPEG_TIMEOUT
         )
 
-        return result.returncode == 0
+        if result.returncode == 0:
+            return True
 
-    except (subprocess.TimeoutExpired, OSError):
+        error = (result.stderr or "").strip().splitlines()
+        if error:
+            print("FFmpeg:", error[-1][:250])
+
         return False
+
+    except subprocess.TimeoutExpired:
+        print("FFmpeg timed out.")
+        return False
+
+    except FileNotFoundError:
+        raise RuntimeError(
+            "FFmpeg was not found. Install FFmpeg in the GitHub workflow."
+        )
 
 
 def main():
-    if not SOURCE_URL:
-        raise SystemExit("Missing playlist URL")
+    source_url = os.environ.get("PLAYLIST_URL", "").strip()
 
-    print("Downloading source playlist...")
-    text = download_playlist(SOURCE_URL)
+    if not source_url:
+        print("Error: PLAYLIST_URL input is empty.")
+        sys.exit(1)
+
+    text = download_playlist(source_url)
     header, entries = parse_playlist(text)
 
-    if not entries:
-        raise SystemExit("No playlist entries found")
+    active_entries = []
+    total = len(entries)
 
-    active = []
-    seen = set()
+    print(f"Found {total} stream entries.")
+    print("Checking streams with FFmpeg...")
 
-    print(f"Checking {len(entries)} entries with FFmpeg...")
+    for index, entry in enumerate(entries, start=1):
+        stream_url = entry[-1]
 
-    for index, (metadata, url) in enumerate(entries, 1):
-        if url in seen:
+        # The final entry line is the stream URL.
+        if not stream_url.startswith(("http://", "https://")):
+            print(f"[{index}/{total}] SKIP: invalid URL")
             continue
 
-        seen.add(url)
+        print(f"[{index}/{total}] Checking {stream_url[:180]}")
 
-        if check_stream(url):
-            active.append((metadata, url))
-            print(f"[ACTIVE] {index}: {url}")
+        try:
+            active = check_stream(stream_url)
+        except RuntimeError as exc:
+            print(exc)
+            sys.exit(1)
+
+        if active:
+            print(f"[{index}/{total}] ACTIVE")
+            active_entries.append(entry)
         else:
-            print(f"[DEAD/UNVERIFIED] {index}: {url}")
+            print(f"[{index}/{total}] DEAD / UNVERIFIED")
 
-    with open(OUTPUT_FILE, "w", encoding="utf-8") as file:
-        file.write(header + "\n")
+    output_lines = header[:]
 
-        for metadata, url in active:
-            file.write("\n".join(metadata) + "\n")
-            file.write(url + "\n")
+    if not output_lines or not any(
+        line.strip().startswith("#EXTM3U") for line in output_lines
+    ):
+        output_lines.insert(0, "#EXTM3U")
 
-    print(f"Total: {len(entries)}")
-    print(f"Passed FFmpeg check: {len(active)}")
-    print(f"Output: {OUTPUT_FILE}")
+    for entry in active_entries:
+        output_lines.extend(entry)
+
+    output_file = "active_playlist.m3u"
+
+    with open(output_file, "w", encoding="utf-8", newline="\n") as file:
+        file.write("\n".join(output_lines).rstrip() + "\n")
+
+    print()
+    print("Playlist check completed.")
+    print(f"Total entries: {total}")
+    print(f"Active entries: {len(active_entries)}")
+    print(f"Output file: {output_file}")
+
+    if not active_entries:
+        print(
+            "Warning: No streams passed the FFmpeg check. "
+            "The output playlist contains the header only."
+        )
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as exc:
+        print(f"ERROR: {exc}")
+        sys.exit(1)
