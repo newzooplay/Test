@@ -5,7 +5,7 @@ import urllib.request
 from urllib.parse import urlparse
 
 SOURCE_URL = os.environ.get("PLAYLIST_URL", "").strip()
-OUTPUT_FILE = "Ayna.m3u"
+OUTPUT_FILE = "active_playlist.m3u"
 TIMEOUT = 12
 
 
