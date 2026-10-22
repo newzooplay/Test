@@ -1,75 +1,50 @@
 
-name: Public Network Analysis
-
-on:
-  workflow_dispatch:
-
-permissions:
-  contents: read
-
-jobs:
-  inspect:
-    runs-on: ubuntu-latest
-    timeout-minutes: 3
-
-    steps:
-      - name: Inspect target HTTP response
+      - name: Inspect public channel metadata
         shell: bash
         run: |
-          set -eu
-
-          TARGET='https://sportlinks.pages.dev/?id=tntsports1'
-
-          mkdir -p report
-
-          echo "Target: $TARGET"
-
-          echo "=== DNS lookup ==="
-          host sportlinks.pages.dev || true
-
-          echo "=== HTTP response and redirects ==="
-          curl \
-            --silent \
-            --show-error \
-            --location \
-            --max-redirs 5 \
-            --max-time 30 \
-            --output report/page.html \
-            --dump-header report/headers.txt \
-            --write-out \
-            'HTTP status: %{http_code}\nFinal URL: %{url_effective}\nContent type: %{content_type}\nRedirects: %{num_redirects}\nTotal time: %{time_total}s\n' \
-            "$TARGET" || true
-
-          echo "=== Response headers ==="
-          sed -n '1,100p' report/headers.txt
-
-          echo "=== HTML resource references ==="
           python3 - <<'PY'
-          from html.parser import HTMLParser
+          import json
+          import urllib.request
 
-          class ResourceParser(HTMLParser):
-              def handle_starttag(self, tag, attrs):
-                  attrs = dict(attrs)
-                  for key in ("src", "href"):
-                      value = attrs.get(key)
-                      if value and tag in (
-                          "script", "link", "iframe", "video", "source"
-                      ):
-                          print(f"{tag} {key}: {value}")
+          urls = [
+              "https://sonujson-v5.pages.dev/loura.json",
+              "https://sportlink-tv10.pages.dev/id.json",
+          ]
 
-          try:
-              with open("report/page.html", encoding="utf-8",
-                        errors="replace") as f:
-                  ResourceParser().feed(f.read())
-          except OSError as e:
-              print(f"Could not read HTML: {e}")
+          def normalise(raw):
+              if isinstance(raw, list):
+                  return raw
+              if not isinstance(raw, dict):
+                  return []
+              for key in ("iframes", "channels", "data"):
+                  if isinstance(raw.get(key), list):
+                      return raw[key]
+              return [raw]
+
+          for url in urls:
+              print("\nSOURCE:", url)
+              try:
+                  req = urllib.request.Request(
+                      url, headers={"User-Agent": "Network-Analysis/1.0"}
+                  )
+                  with urllib.request.urlopen(req, timeout=15) as response:
+                      raw = json.loads(response.read().decode("utf-8"))
+
+                  entries = normalise(raw)
+                  print("Entries:", len(entries))
+
+                  for item in entries:
+                      if not isinstance(item, dict):
+                          continue
+                      if str(item.get("id")) == "tntsports1":
+                          # Avoid printing tracking tokens or query parameters.
+                          print("Matching channel:")
+                          print("  id:", item.get("id"))
+                          print("  name:", item.get("name"))
+                          print("  category:", item.get("category"))
+                          print("  has iframeSrc:", bool(item.get("iframeSrc")))
+                          print("  has hit:", bool(item.get("hit")))
+
+              except Exception as exc:
+                  print("Analysis failed:", type(exc).__name__, str(exc))
           PY
-
-      - name: Upload analysis report
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: public-network-report
-          path: report/
-          if-no-files-found: warn
-          retention-days: 3
