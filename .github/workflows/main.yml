@@ -1,80 +1,75 @@
 
-name: Website Diagnostics
+name: Public Network Analysis
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - main
-  schedule:
-    - cron: "0 3 * * *"
 
 permissions:
-  contents: write
-
-concurrency:
-  group: website-diagnostics
-  cancel-in-progress: false
+  contents: read
 
 jobs:
-  analyze:
+  inspect:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
-
-    env:
-      TARGET_URL: https://v4jxp5.movielinkbd.at/movie/mKs_ojqfqk3njpyykzcnckj3ykxtli
-      PYTHONUNBUFFERED: "1"
+    timeout-minutes: 3
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          ref: main
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Install dependencies
+      - name: Inspect target HTTP response
+        shell: bash
         run: |
-          python -m pip install --upgrade pip
-          pip install requests playwright
-          python -m playwright install --with-deps chromium
+          set -eu
 
-      - name: Run website analyzer
-        id: analyzer
-        continue-on-error: true
-        run: python analyzer.py
+          TARGET='https://sportlinks.pages.dev/?id=tntsports1'
 
-      - name: Commit and push report
-        if: always()
-        run: |
-          mkdir -p reports
+          mkdir -p report
 
-          if [ ! -f reports/report.json ]; then
-            echo '{"error":"Analyzer did not produce a report"}' \
-              > reports/report.json
-          fi
+          echo "Target: $TARGET"
 
-          git config user.name "github-actions[bot]"
-          git config user.email \
-            "41898282+github-actions[bot]@users.noreply.github.com"
+          echo "=== DNS lookup ==="
+          host sportlinks.pages.dev || true
 
-          git add reports/report.json
+          echo "=== HTTP response and redirects ==="
+          curl \
+            --silent \
+            --show-error \
+            --location \
+            --max-redirs 5 \
+            --max-time 30 \
+            --output report/page.html \
+            --dump-header report/headers.txt \
+            --write-out \
+            'HTTP status: %{http_code}\nFinal URL: %{url_effective}\nContent type: %{content_type}\nRedirects: %{num_redirects}\nTotal time: %{time_total}s\n' \
+            "$TARGET" || true
 
-          if ! git diff --cached --quiet; then
-            git commit -m "Update website diagnostics report"
-            git push origin HEAD:main
-          else
-            echo "No report changes to commit."
-          fi
+          echo "=== Response headers ==="
+          sed -n '1,100p' report/headers.txt
 
-      - name: Upload report artifact
+          echo "=== HTML resource references ==="
+          python3 - <<'PY'
+          from html.parser import HTMLParser
+
+          class ResourceParser(HTMLParser):
+              def handle_starttag(self, tag, attrs):
+                  attrs = dict(attrs)
+                  for key in ("src", "href"):
+                      value = attrs.get(key)
+                      if value and tag in (
+                          "script", "link", "iframe", "video", "source"
+                      ):
+                          print(f"{tag} {key}: {value}")
+
+          try:
+              with open("report/page.html", encoding="utf-8",
+                        errors="replace") as f:
+                  ResourceParser().feed(f.read())
+          except OSError as e:
+              print(f"Could not read HTML: {e}")
+          PY
+
+      - name: Upload analysis report
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: website-diagnostics-report
-          path: reports/report.json
+          name: public-network-report
+          path: report/
           if-no-files-found: warn
-          retention-days: 7
+          retention-days: 3
