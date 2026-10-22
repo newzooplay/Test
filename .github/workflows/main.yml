@@ -3,14 +3,20 @@ name: Chromium Network Analysis
 
 on:
   workflow_dispatch:
+  schedule:
+    - cron: "0 */12 * * *"
 
 permissions:
-  contents: read
+  contents: write
+
+concurrency:
+  group: network-analysis
+  cancel-in-progress: false
 
 jobs:
   analyze:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
 
     steps:
       - name: Checkout repository
@@ -21,23 +27,40 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install Playwright and Chromium
+      - name: Install Playwright
         run: |
+          python -m pip install --upgrade pip
           python -m pip install playwright
           python -m playwright install --with-deps chromium
 
       - name: Run network analysis
         env:
           TARGET_URL: https://playerbee.top/charlie/pga-lpga-golf/3028
-        run: |
-          python network_analysis.py
+        run: python network_analysis.py
 
-      - name: Upload network report
+      - name: Upload reports as artifact
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: chromium-network-report
           path: reports/
           if-no-files-found: warn
-          retention-days: 3
-          
+          retention-days: 7
+
+      - name: Commit and push reports
+        if: always() && steps.checkout.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add reports/
+
+          if git diff --cached --quiet; then
+            echo "No report changes to commit."
+            exit 0
+          fi
+
+          git commit -m "Update network analysis reports"
+          git push
